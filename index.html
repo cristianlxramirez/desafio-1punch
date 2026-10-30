@@ -263,11 +263,19 @@ textarea{width:100%;min-height:90px;margin-top:10px;background:#111;color:var(--
     </div>
   </div>
 </div>
+<div class="modal" id="who">
+  <div class="card" style="text-align:center">
+    <div style="font-size:44px">👊</div>
+    <h2 style="justify-content:center">¿Quién sos?</h2>
+    <p>Elegí tu nombre. Después podés ver a los otros desde los botones de arriba.</p>
+    <div id="whoBtns" style="display:grid;gap:8px;margin-top:14px"></div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
 (() => {
-const KEY = 'onepunch30_cristian', OLDKEY = 'onepunch30_none', BGKEY = 'onepunch30_bg_cristian', PKEY='onepunch30_player_cristian';
+const KEY = 'onepunch30_v2', OLDKEY = 'onepunch30_v1', BGKEY = 'onepunch30_bg', PKEY='onepunch30_player';
 const DAYS = 30;
 const PLAYERS = [{id:'cristian',name:'Cristian'},{id:'franco',name:'Franco'},{id:'guillermo',name:'Guillermo'}];
 const PCOL = ['var(--red)','var(--yellow)','var(--blue)'];
@@ -573,6 +581,13 @@ try{
 }catch(_){}
 
 applyBg(); render();
+// primera vez: elegir jugador
+(()=>{ let has=false; try{ has=!!localStorage.getItem(PKEY); }catch(_){}
+  if(has) return;
+  $('whoBtns').innerHTML = PLAYERS.map((p,i)=>`<button class="btn" data-p="${p.id}" style="font-family:Anton,sans-serif;font-size:24px;border:2px solid ${PCOL[i]}">${p.name}</button>`).join('');
+  $('whoBtns').querySelectorAll('button').forEach(b=>b.onclick=()=>{ cur=b.dataset.p; try{localStorage.setItem(PKEY,cur);}catch(_){} $('who').classList.remove('show'); render(); toast('¡Vamos, '+PLAYERS.find(p=>p.id===cur).name+'! 👊'); });
+  $('who').classList.add('show');
+})();
 let last=ymd(new Date()); setInterval(()=>{ const n=ymd(new Date()); if(n!==last){ last=n; sel=Math.min(Math.max(todayIdx(),0),DAYS-1); render(); } },60000);
 })();
 </script>
