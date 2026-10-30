@@ -96,7 +96,9 @@ h1{font-family:Anton,sans-serif;font-size:46px;line-height:.95;letter-spacing:1p
 .vs .pl .pts{font-family:Anton,sans-serif;font-size:30px;line-height:1.1}
 .vs .pl small{display:block;color:var(--muted);font-size:12px;letter-spacing:1px;text-transform:uppercase;margin-top:2px}
 .vs .p0 .pts{color:var(--red)} .vs .p1 .pts{color:var(--yellow)} .vs .p2 .pts{color:var(--blue)}
-.vs .pl.lead1 .pts::after{content:' 👑';font-size:16px}
+.vs .pl{position:relative}
+.vs .pl.lead1::before{content:'👑';position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:18px}
+.vs{margin-top:20px!important}
 .vs .mid{font-family:Anton,sans-serif;font-size:20px;color:#fff;text-shadow:3px 3px 0 var(--red);transform:rotate(-8deg)}
 .vsbar{display:flex;height:14px;border-radius:99px;overflow:hidden;margin-top:12px;background:#222}
 .vsbar i{display:block;height:100%;transition:width .6s}
@@ -178,7 +180,7 @@ textarea{width:100%;min-height:90px;margin-top:10px;background:#111;color:var(--
   <div class="quote" id="quote"></div>
 
   <section class="card">
-    <h2>Marcador <small>% de metas cumplidas</small></h2>
+    <h2>Marcador <small>% cumplido hasta hoy</small></h2>
     <div class="vs">
       <div class="pl p0" id="vC0"><b id="vN0"></b><div class="pts" id="vP0">0%</div><small id="vD0"></small></div>
       <div class="mid">VS</div>
@@ -235,7 +237,7 @@ textarea{width:100%;min-height:90px;margin-top:10px;background:#111;color:var(--
   <section class="card">
     <h2>Ajustes</h2>
     <div class="field">
-      <span>Fecha de inicio</span>
+      <span id="startLbl">Fecha de inicio</span>
       <input type="date" id="startDate">
     </div>
     <div class="btns">
@@ -341,11 +343,32 @@ function load(){
   return fresh();
 }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
-let state = load(); PLAYERS.forEach(p=>{ state.log[p.id]=state.log[p.id]||[]; }); save();
+// ---- carga inicial: Cristian y Franco arrancaron el 28/10, Guillermo se suma el 30/10 ----
+const SEED_START = '2026-10-28', SEED_PSTART = {guillermo:'2026-10-30'};
+const daysBetween = (a,b) => Math.round((parseYmd(b)-parseYmd(a))/864e5);
+function migrate(st){
+  PLAYERS.forEach(p=>{ st.log[p.id]=st.log[p.id]||[]; });
+  st.pstart = st.pstart || {};
+  if (st.seed1) return st;
+  const oldStartOf = p => (st.pstart[p]||st.start);
+  const newStartOf = p => (SEED_PSTART[p]||SEED_START);
+  // reubicar lo ya cargado según la nueva fecha de inicio de cada uno
+  PLAYERS.forEach(p=>{ const sh = daysBetween(newStartOf(p.id), oldStartOf(p.id)); if(sh) st.log[p.id].forEach(r=>r.d+=sh); st.log[p.id]=st.log[p.id].filter(r=>r.d>=0&&r.d<DAYS); });
+  st.start = SEED_START; st.pstart = Object.assign({}, SEED_PSTART);
+  // días 1 y 2: flexiones, abdominales y sentadillas completas (sin correr)
+  ['cristian','franco'].forEach(p=>[0,1].forEach(d=>['flex','abs','sent'].forEach(ex=>{
+    const have = st.log[p].filter(r=>r.d===d&&r.ex===ex).reduce((a,r)=>a+r.v,0);
+    if (have < 100) { const t=parseYmd(SEED_START); t.setDate(t.getDate()+d); t.setHours(20,0,0,0); st.log[p].push({d,ex,v:100-have,ts:t.getTime()}); }
+  })));
+  st.seed1 = true;
+  return st;
+}
+let state = migrate(load()); save();
 let cur = (()=>{ try{ const v=localStorage.getItem(PKEY); if(PLAYERS.some(p=>p.id===v)) return v; }catch(e){} return PLAYERS[0].id; })();
 
-const dayDate = i => { const d = parseYmd(state.start); d.setDate(d.getDate()+i); return d; };
-const todayIdx = () => Math.floor((parseYmd(ymd(new Date())) - parseYmd(state.start)) / 864e5);
+const startOf = (p=cur) => (state.pstart&&state.pstart[p]) || state.start;
+const dayDate = (i,p=cur) => { const d = parseYmd(startOf(p)); d.setDate(d.getDate()+i); return d; };
+const todayIdx = (p=cur) => Math.floor((parseYmd(ymd(new Date())) - parseYmd(startOf(p))) / 864e5);
 const amount = (p,d,ex) => state.log[p].filter(r=>r.d===d&&r.ex===ex).reduce((a,r)=>a+r.v,0);
 const exDone = (p,d,e) => amount(p,d,e.id) >= e.goal - 1e-9;
 const countDay = (p,d) => EX.filter(e=>exDone(p,d,e)).length;
@@ -354,13 +377,17 @@ let sel = Math.min(Math.max(todayIdx(),0),DAYS-1);
 let openEx = null;
 
 function streak(p){
-  let t = Math.min(todayIdx(), DAYS-1), s = 0;
+  let t = Math.min(todayIdx(p), DAYS-1), s = 0;
   if (t < 0) return 0;
   if (countDay(p,t) < EX.length) t--;
   for (let i=t; i>=0 && countDay(p,i)===EX.length; i--) s++;
   return s;
 }
-function score(p){ let f=0, full=0; for(let i=0;i<DAYS;i++){ f+=dayFrac(p,i); if(countDay(p,i)===EX.length) full++; } return {pct:f/(DAYS*EX.length)*100, full, metas:f}; }
+function score(p){
+  let f=0, full=0, fs=0; const n = Math.min(Math.max(todayIdx(p)+1,1),DAYS);
+  for(let i=0;i<DAYS;i++){ const x=dayFrac(p,i); f+=x; if(i<n) fs+=x; if(countDay(p,i)===EX.length) full++; }
+  return {pct:fs/(n*EX.length)*100, tot:f/(DAYS*EX.length)*100, full, metas:f, dayN:n};
+}
 
 function render(){
   const t = todayIdx(), P = PLAYERS.find(p=>p.id===cur);
@@ -371,7 +398,7 @@ function render(){
   PLAYERS.forEach((p,i)=>{
     $('vN'+i).textContent = p.name;
     $('vP'+i).textContent = (Math.round(sc[i].pct*10)/10).toString().replace('.',',')+'%';
-    $('vD'+i).textContent = sc[i].full+' días OK · racha '+streak(p.id);
+    $('vD'+i).textContent = 'día '+sc[i].dayN+' · racha '+streak(p.id);
     $('vC'+i).classList.remove('lead1');
   });
   const tot = sc.reduce((x,y)=>x+y.pct,0);
@@ -385,15 +412,15 @@ function render(){
 
   // tabs
   $('tabs').innerHTML = PLAYERS.map((p,i)=>`<button class="tab p${i} ${p.id===cur?'on':''}" data-p="${p.id}">${p.name}</button>`).join('');
-  $('tabs').querySelectorAll('.tab').forEach(b=>b.onclick=()=>{ cur=b.dataset.p; openEx=null; try{localStorage.setItem(PKEY,cur);}catch(e){} render(); });
+  $('tabs').querySelectorAll('.tab').forEach(b=>b.onclick=()=>{ cur=b.dataset.p; openEx=null; sel=Math.min(Math.max(todayIdx(),0),DAYS-1); try{localStorage.setItem(PKEY,cur);}catch(e){} render(); });
 
   // stats del jugador
   const my = sc[PLAYERS.indexOf(P)];
   $('sDay').textContent = t<0 ? '–' : Math.min(t+1,DAYS);
   $('sStreak').textContent = streak(cur);
   $('sFull').textContent = my.full+'/'+DAYS;
-  $('pBar').style.width = my.pct+'%';
-  $('pTxt').textContent = P.name+' · '+(Math.round(my.pct*10)/10).toString().replace('.',',')+'%';
+  $('pBar').style.width = my.tot+'%';
+  $('pTxt').textContent = P.name+' · '+(Math.round(my.tot*10)/10).toString().replace('.',',')+'% del desafío';
 
   // día seleccionado
   const isToday = sel===t, future = sel>t;
@@ -468,7 +495,8 @@ function render(){
   $('log').innerHTML = rows.length ? rows.map(({p,r,e})=>`<div class="row"><b><span style="color:${PCOL[PLAYERS.indexOf(p)]}">${p.name}</span> · Día ${r.d+1} · ${e.ico} ${fmtN(r.v,e)} ${e.name.toLowerCase()}</b><span>${fmtTs(r.ts)}</span></div>`).join('')
     : '<div class="empty">Todavía nada. El primer golpe es el más difícil. 👊</div>';
 
-  $('startDate').value = state.start;
+  $('startDate').value = startOf(cur);
+  $('startLbl').textContent = 'Inicio de '+P.name;
 }
 
 function setRun(e, n, ev){
@@ -522,14 +550,14 @@ $('next').onclick = ()=>{ if(sel<DAYS-1){sel++;openEx=null;render();} };
 
 $('startDate').onchange = e => {
   const v = e.target.value; if(!v) return;
-  ask('Cambiar inicio', 'El día 1 pasará a ser el '+fmtDate(parseYmd(v))+' (para los dos). Los registros se mantienen por número de día.', ()=>{
-    state.start=v; save(); sel=Math.min(Math.max(todayIdx(),0),DAYS-1); render();
+  ask('Cambiar inicio', 'El día 1 de '+PLAYERS.find(p=>p.id===cur).name+' pasará a ser el '+fmtDate(parseYmd(v))+'. Los registros se mantienen por número de día.', ()=>{
+    state.pstart=state.pstart||{}; state.pstart[cur]=v; save(); sel=Math.min(Math.max(todayIdx(),0),DAYS-1); render();
   });
   render();
 };
 
 $('resetBtn').onclick = () => ask('Reiniciar desafío','Se borra todo el progreso de los tres, y el día 1 pasa a ser hoy.',()=>{
-  state=fresh(); save(); sel=0; render(); toast('Nuevo comienzo 👊');
+  state=fresh(); state.seed1=true; save(); sel=0; render(); toast('Nuevo comienzo 👊');
 });
 
 // respaldo
@@ -545,7 +573,7 @@ $('importBtn').onclick = () => {
   try{
     const s = JSON.parse(ta.value.trim());
     if(!s.start || typeof s.log!=='object') throw 0;
-    ask('Restaurar','Se reemplaza el progreso actual por el respaldo.',()=>{ PLAYERS.forEach(p=>{s.log[p.id]=s.log[p.id]||[];}); state=s; save(); sel=Math.min(Math.max(todayIdx(),0),DAYS-1); ta.style.display='none'; render(); toast('Restaurado ✔'); });
+    ask('Restaurar','Se reemplaza el progreso actual por el respaldo.',()=>{ PLAYERS.forEach(p=>{s.log[p.id]=s.log[p.id]||[];}); state=migrate(s); save(); sel=Math.min(Math.max(todayIdx(),0),DAYS-1); ta.style.display='none'; render(); toast('Restaurado ✔'); });
   }catch(_){ toast('Respaldo inválido'); }
 };
 
@@ -585,7 +613,7 @@ applyBg(); render();
 (()=>{ let has=false; try{ has=!!localStorage.getItem(PKEY); }catch(_){}
   if(has) return;
   $('whoBtns').innerHTML = PLAYERS.map((p,i)=>`<button class="btn" data-p="${p.id}" style="font-family:Anton,sans-serif;font-size:24px;border:2px solid ${PCOL[i]}">${p.name}</button>`).join('');
-  $('whoBtns').querySelectorAll('button').forEach(b=>b.onclick=()=>{ cur=b.dataset.p; try{localStorage.setItem(PKEY,cur);}catch(_){} $('who').classList.remove('show'); render(); toast('¡Vamos, '+PLAYERS.find(p=>p.id===cur).name+'! 👊'); });
+  $('whoBtns').querySelectorAll('button').forEach(b=>b.onclick=()=>{ cur=b.dataset.p; sel=Math.min(Math.max(todayIdx(),0),DAYS-1); try{localStorage.setItem(PKEY,cur);}catch(_){} $('who').classList.remove('show'); render(); toast('¡Vamos, '+PLAYERS.find(p=>p.id===cur).name+'! 👊'); });
   $('who').classList.add('show');
 })();
 let last=ymd(new Date()); setInterval(()=>{ const n=ymd(new Date()); if(n!==last){ last=n; sel=Math.min(Math.max(todayIdx(),0),DAYS-1); render(); } },60000);
