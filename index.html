@@ -215,6 +215,8 @@ textarea{width:100%;min-height:90px;margin-top:10px;background:#111;color:var(--
     <div style="color:var(--muted);font-size:15px;margin-top:2px" id="dDate"></div>
     <div id="exList"></div>
     <div class="complete" id="complete">💥 ¡Día completo, héroe! 💥</div>
+    <button class="btn red" id="saveBtn" style="width:100%;margin-top:14px;font-family:Anton,sans-serif;font-size:24px;padding:14px;letter-spacing:1px">💾 Guardar</button>
+    <div id="saveInfo" style="text-align:center;color:var(--muted);font-size:14px;margin-top:6px"></div>
   </section>
 
   <!-- CALENDARIO -->
@@ -343,7 +345,14 @@ function load(){
   }catch(e){}
   return fresh();
 }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
+function save(){
+  try{ const txt=JSON.stringify(state); localStorage.setItem(KEY, txt); localStorage.setItem(KEY+'_at', String(Date.now())); return localStorage.getItem(KEY)===txt; }catch(e){ return false; }
+}
+function saveInfo(){
+  const el=document.getElementById('saveInfo'); if(!el) return;
+  let at=0; try{ at=+localStorage.getItem(KEY+'_at')||0; }catch(_){}
+  el.textContent = at ? 'Último guardado: '+fmtTs(at) : '';
+}
 // ---- carga inicial: Cristian y Franco arrancaron el 28/10, Guillermo se suma el 30/10 ----
 const SEED_START = '2026-10-28', SEED_PSTART = {guillermo:'2026-10-30'};
 const daysBetween = (a,b) => Math.round((parseYmd(b)-parseYmd(a))/864e5);
@@ -476,6 +485,7 @@ function render(){
     list.appendChild(el);
   });
   $('complete').classList.toggle('show', countDay(cur,sel)===EX.length);
+  saveInfo();
 
   // grilla
   const g = $('grid'); g.innerHTML='';
@@ -619,6 +629,13 @@ try{
   else if(inApp){ w.innerHTML='⚠️ <b>Estás dentro de otra app</b> (WhatsApp, Instagram…). Ahí los datos se pueden borrar. Tocá ⋮ → <b>Abrir en Chrome</b> (o en Safari) y agregala a la pantalla de inicio.'; w.style.display='block'; }
   try{ navigator.storage && navigator.storage.persist && navigator.storage.persist(); }catch(_){}
 })();
+$('saveBtn').onclick = () => {
+  const ok = save(); saveInfo();
+  if (ok) { toast('💾 Guardado ✔'); try{ navigator.vibrate && navigator.vibrate(30); }catch(_){} }
+  else ask('No se pudo guardar','Este navegador no está guardando datos. Abrí la página en Chrome normal (no incógnito ni dentro de WhatsApp) y agregala a la pantalla de inicio.',()=>{});
+};
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') save(); });
+window.addEventListener('pagehide',()=>save());
 applyBg(); render();
 // primera vez: elegir jugador
 (()=>{ let has=false; try{ has=!!localStorage.getItem(PKEY); }catch(_){}
