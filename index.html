@@ -377,7 +377,7 @@ function migrate(st){
 let state = migrate(load()); save();
 
 // =================== SINCRONIZACIÓN (Firebase Realtime Database) ===================
-const DB_URL = '';                       // ej: https://desafio-1punch-xxxx-default-rtdb.firebaseio.com
+const DB_URL = 'https://desafio-1punch-default-rtdb.firebaseio.com';                       // ej: https://desafio-1punch-xxxx-default-rtdb.firebaseio.com
 const DB_ROOT = 'desafio_cfg7k2q9wz';
 const QKEY = KEY+'_queue', MKEY = KEY+'_merged';
 const online = () => !!DB_URL;
