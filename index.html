@@ -217,6 +217,7 @@ textarea{width:100%;min-height:90px;margin-top:10px;background:#111;color:var(--
     <div class="complete" id="complete">💥 ¡Día completo, héroe! 💥</div>
     <button class="btn red" id="saveBtn" style="width:100%;margin-top:14px;font-family:Anton,sans-serif;font-size:24px;padding:14px;letter-spacing:1px">💾 Guardar</button>
     <div id="saveInfo" style="text-align:center;color:var(--muted);font-size:14px;margin-top:6px"></div>
+    <div id="syncInfo" style="text-align:center;font-size:15px;margin-top:4px"></div>
   </section>
 
   <!-- CALENDARIO -->
@@ -253,7 +254,7 @@ textarea{width:100%;min-height:90px;margin-top:10px;background:#111;color:var(--
     <div class="btns" style="grid-template-columns:1fr">
       <button class="btn red" id="resetBtn">Reiniciar desafío</button>
     </div>
-    <p class="hint">Tu progreso se guarda en este celular, en este navegador. Copiá un respaldo de vez en cuando.<br>
+    <p class="hint">Tu progreso se guarda en este celular y, con internet, se comparte con el grupo. El respaldo es por si acaso.<br>
     Para tenerla como app: en Chrome tocá ⋮ → <b>Agregar a pantalla principal</b>. En iPhone: Compartir → <b>Agregar a inicio</b>.</p>
   </section>
 </div>
@@ -374,6 +375,144 @@ function migrate(st){
   return st;
 }
 let state = migrate(load()); save();
+
+// =================== SINCRONIZACIÓN (Firebase Realtime Database) ===================
+const DB_URL = '';                       // ej: https://desafio-1punch-xxxx-default-rtdb.firebaseio.com
+const DB_ROOT = 'desafio_cfg7k2q9wz';
+const QKEY = KEY+'_queue', MKEY = KEY+'_merged';
+const online = () => !!DB_URL;
+const rid = () => 'tmp_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+let queue = (()=>{ try{ return (JSON.parse(localStorage.getItem(QKEY))||[]).map(o=>(delete o.sent,o)); }catch(_){ return []; } })();
+let sync = {status: online()?'connecting':'local', last:0};
+const saveQ = () => { try{ localStorage.setItem(QKEY, JSON.stringify(queue)); }catch(_){} };
+const dbUrl = path => DB_URL.replace(/\/+$/,'')+'/'+DB_ROOT+(path?'/'+path:'')+'.json';
+
+function toRemote(st){
+  const log={}; PLAYERS.forEach(p=>{ log[p.id]={}; (st.log[p.id]||[]).forEach(r=>{ const k=(r.id&&!r.id.startsWith('tmp_'))?r.id:'k'+rid().slice(4); log[p.id][k]={d:r.d,ex:r.ex,v:r.v,ts:r.ts}; }); });
+  return {start:st.start, pstart:st.pstart||{}, seed1:true, log};
+}
+function fromRemote(r){
+  const st={start:r.start, pstart:r.pstart||{}, seed1:true, log:{}};
+  PLAYERS.forEach(p=>{ st.log[p.id]=Object.entries((r.log&&r.log[p.id])||{}).map(([id,x])=>({id,d:x.d,ex:x.ex,v:x.v,ts:x.ts})); });
+  return st;
+}
+// --- operaciones (local inmediato + cola para subir) ---
+function addEntry(p, rec){
+  rec.id = rid(); state.log[p].push(rec);
+  if (online()) { queue.push({m:'POST', path:'log/'+p, body:{d:rec.d,ex:rec.ex,v:rec.v,ts:rec.ts}, tmp:rec.id, p}); saveQ(); }
+  save(); flush();
+}
+function delEntries(p, pred){
+  const gone = state.log[p].filter(pred);
+  state.log[p] = state.log[p].filter(r=>!pred(r));
+  if (online()) {
+    gone.forEach(r=>{
+      if (r.id && r.id.startsWith('tmp_')) {
+        const op = queue.find(o=>o.tmp===r.id);
+        if (op && op.sent) queue.push({m:'DELETE', path:'log/'+p+'/'+r.id});   // ya se está subiendo: borrarlo cuando termine
+        else queue = queue.filter(o=>o.tmp!==r.id);
+      }
+      else if (r.id) queue.push({m:'DELETE', path:'log/'+p+'/'+r.id});
+    }); saveQ();
+  }
+  save(); flush();
+}
+function setPStart(p, v){
+  state.pstart=state.pstart||{}; state.pstart[p]=v;
+  if (online()) { queue.push({m:'PUT', path:'pstart/'+p, body:v}); saveQ(); }
+  save(); flush();
+}
+function replaceAll(st){
+  state = st; PLAYERS.forEach(p=>state.log[p.id]=state.log[p.id]||[]);
+  if (online()) { queue=[{m:'PUT', path:'', body:toRemote(state)}]; saveQ(); }
+  save(); flush();
+}
+// --- subir la cola ---
+let busy=false, again=false, retryT=null, waiters=[];
+function flush(){
+  if (!online()) return Promise.resolve(true);
+  const p = new Promise(res=>waiters.push(res));
+  if (busy) { again=true; return p; }
+  busy=true;
+  (async()=>{
+    let ok=true;
+    do {
+      again=false;
+      while (queue.length){
+        const o = queue[0]; o.sent = true;
+        try{
+          const res = await fetch(dbUrl(o.path), {method:o.m, headers:{'Content-Type':'application/json'}, body: o.m==='DELETE'?undefined:JSON.stringify(o.body)});
+          if (!res.ok) throw new Error('HTTP '+res.status);
+          if (o.m==='POST'){ const j=await res.json(); const r=state.log[o.p].find(x=>x.id===o.tmp); if(r) r.id=j.name; queue.forEach(q=>{ if(q.m==='DELETE'&&q.path==='log/'+o.p+'/'+o.tmp) q.path='log/'+o.p+'/'+j.name; }); }
+          queue = queue.filter(x=>x!==o); saveQ(); save();
+        }catch(e){ o.sent=false; ok=false; break; }
+      }
+    } while (ok && again);
+    busy=false;
+    if (ok){ sync.status='ok'; sync.last=Date.now(); }
+    else { sync.status='offline'; clearTimeout(retryT); retryT=setTimeout(()=>flush().then(o=>o&&pull()), 15000); }
+    renderSync();
+    const w=waiters; waiters=[]; w.forEach(f=>f(ok));
+  })();
+  return p;
+}
+// --- bajar el estado compartido ---
+async function pull(){
+  if (!online()) return;
+  try{
+    if (queue.length){ const ok = await flush(); if(!ok) return; }
+    const res = await fetch(dbUrl(''), {cache:'no-store'}); if(!res.ok) throw 0;
+    let r = await res.json();
+    if (!r || !r.start){                       // base vacía: la inicializa el primero que entra
+      const seed = toRemote(migrate(fresh()));
+      if (r && r.log) PLAYERS.forEach(p=>Object.assign(seed.log[p.id], r.log[p.id]||{}));   // conservar lo que ya se haya subido
+      r = seed;
+      await fetch(dbUrl(''), {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(r)});
+      const again = await fetch(dbUrl(''), {cache:'no-store'}); r = await again.json();
+    }
+    if (queue.length) return;                  // hubo cambios mientras bajaba: esperar al próximo pull
+    state = fromRemote(r); save();
+    sync.status='ok'; sync.last=Date.now();
+    mergeLocal();
+    render();
+  }catch(e){ sync.status='offline'; renderSync(); }
+}
+// la primera vez que este celular se conecta, sube lo que tenía guardado de SU jugador
+let preSync = null;
+function mergeLocal(){
+  let who=null, done=false;
+  try{ who=localStorage.getItem(PKEY); done=localStorage.getItem(MKEY)==='1'; }catch(_){}
+  if (done || !who || !preSync) return;
+  const mine = preSync.log[who]||[], keys = new Set(mine.map(r=>r.d+'|'+r.ex));
+  let added=0;
+  keys.forEach(k=>{
+    const [d,ex]=k.split('|'); const dd=+d;
+    const rs=mine.filter(r=>r.d===dd&&r.ex===ex), loc=rs.reduce((a,r)=>a+r.v,0);
+    const rem=state.log[who].filter(r=>r.d===dd&&r.ex===ex).reduce((a,r)=>a+r.v,0);
+    if (loc-rem>1e-9){ addEntry(who,{d:dd,ex,v:Math.round((loc-rem)*10)/10,ts:Math.max(...rs.map(r=>r.ts))}); added++; }
+  });
+  try{ localStorage.setItem(MKEY,'1'); }catch(_){}
+  if (added) toast('☁️ Subí tus '+added+' registros al grupo');
+}
+let es=null, pullT=null;
+function listen(){
+  if (!online() || !window.EventSource) return;
+  try{ es && es.close(); }catch(_){}
+  es = new EventSource(dbUrl(''));
+  const onChange = () => { clearTimeout(pullT); pullT=setTimeout(pull, 400); };
+  es.addEventListener('put', onChange); es.addEventListener('patch', onChange);
+  es.onerror = () => { sync.status = navigator.onLine===false ? 'offline' : sync.status; renderSync(); };
+}
+function renderSync(){
+  const el=document.getElementById('syncInfo'); if(!el) return;
+  const hm = t => pad(new Date(t).getHours())+':'+pad(new Date(t).getMinutes());
+  if (!online()) el.innerHTML = '📱 Guardado solo en este celular';
+  else if (queue.length) el.innerHTML = '🟡 '+queue.length+' cambio'+(queue.length>1?'s':'')+' por subir'+(sync.status==='offline'?' · sin conexión, se sube solo cuando vuelva':'…');
+  else if (sync.status==='ok') el.innerHTML = '🟢 Sincronizado con el grupo · '+hm(sync.last);
+  else if (sync.status==='offline') el.innerHTML = '🔴 Sin conexión · mostrando lo último guardado';
+  else el.innerHTML = '⏳ Conectando con el grupo…';
+}
+// =================================================================================
 let cur = (()=>{ try{ const v=localStorage.getItem(PKEY); if(PLAYERS.some(p=>p.id===v)) return v; }catch(e){} return PLAYERS[0].id; })();
 
 const startOf = (p=cur) => (state.pstart&&state.pstart[p]) || state.start;
@@ -473,7 +612,7 @@ function render(){
       const n = parseFloat(String(inp.value).replace(',','.'));
       if(!(n>0)){ toast('Poné una cantidad'); return; }
       const before = exDone(cur,sel,e);
-      state.log[cur].push({d:sel,ex:e.id,v:n,ts:Date.now()}); save();
+      addEntry(cur,{d:sel,ex:e.id,v:n,ts:Date.now()});
       openEx=null;
       const nowDone = exDone(cur,sel,e);
       if(nowDone && !before) celebrate(e, ev);
@@ -485,7 +624,7 @@ function render(){
     list.appendChild(el);
   });
   $('complete').classList.toggle('show', countDay(cur,sel)===EX.length);
-  saveInfo();
+  saveInfo(); renderSync();
 
   // grilla
   const g = $('grid'); g.innerHTML='';
@@ -515,9 +654,8 @@ function setRun(e, n, ev){
   n = Math.round(n*10)/10;
   const before = exDone(cur,sel,e), prev = amount(cur,sel,e.id);
   if (Math.abs(n-prev)<1e-9) return;
-  state.log[cur] = state.log[cur].filter(r=>!(r.d===sel&&r.ex===e.id));
-  if (n>0) state.log[cur].push({d:sel,ex:e.id,v:n,ts:Date.now()});
-  save();
+  delEntries(cur, r=>r.d===sel&&r.ex===e.id);
+  if (n>0) addEntry(cur,{d:sel,ex:e.id,v:n,ts:Date.now()});
   if (exDone(cur,sel,e) && !before) celebrate(e, ev);
   else toast(n>0 ? '🏃 '+fmtN(n,e)+' de '+fmtN(e.goal,e) : 'Correr en 0 km');
   render();
@@ -535,12 +673,12 @@ function toggle(e, ev){
   const v = amount(cur,sel,e.id);
   if (v >= e.goal-1e-9) {
     ask('¿Desmarcar?', `Se borra lo cargado de ${e.name.toLowerCase()} del día ${sel+1} para ${PLAYERS.find(p=>p.id===cur).name}.`, () => {
-      state.log[cur] = state.log[cur].filter(r=>!(r.d===sel&&r.ex===e.id)); save(); render();
+      delEntries(cur, r=>r.d===sel&&r.ex===e.id); render();
     });
     return;
   }
   // completa lo que falta
-  state.log[cur].push({d:sel,ex:e.id,v:Math.round((e.goal-v)*10)/10,ts:Date.now()}); save();
+  addEntry(cur,{d:sel,ex:e.id,v:Math.round((e.goal-v)*10)/10,ts:Date.now()});
   celebrate(e, ev); render();
 }
 
@@ -562,13 +700,13 @@ $('next').onclick = ()=>{ if(sel<DAYS-1){sel++;openEx=null;render();} };
 $('startDate').onchange = e => {
   const v = e.target.value; if(!v) return;
   ask('Cambiar inicio', 'El día 1 de '+PLAYERS.find(p=>p.id===cur).name+' pasará a ser el '+fmtDate(parseYmd(v))+'. Los registros se mantienen por número de día.', ()=>{
-    state.pstart=state.pstart||{}; state.pstart[cur]=v; save(); sel=Math.min(Math.max(todayIdx(),0),DAYS-1); render();
+    setPStart(cur, v); sel=Math.min(Math.max(todayIdx(),0),DAYS-1); render();
   });
   render();
 };
 
-$('resetBtn').onclick = () => ask('Reiniciar desafío','Se borra todo el progreso de los tres, y el día 1 pasa a ser hoy.',()=>{
-  state=fresh(); state.seed1=true; save(); sel=0; render(); toast('Nuevo comienzo 👊');
+$('resetBtn').onclick = () => ask('Reiniciar desafío',(online()?'Se borra el progreso de LOS TRES en todos los celulares':'Se borra todo el progreso de los tres')+', y el día 1 pasa a ser hoy.',()=>{
+  const f=fresh(); f.seed1=true; replaceAll(f); sel=0; render(); toast('Nuevo comienzo 👊');
 });
 
 // respaldo
@@ -584,7 +722,7 @@ $('importBtn').onclick = () => {
   try{
     const s = JSON.parse(ta.value.trim());
     if(!s.start || typeof s.log!=='object') throw 0;
-    ask('Restaurar','Se reemplaza el progreso actual por el respaldo.',()=>{ PLAYERS.forEach(p=>{s.log[p.id]=s.log[p.id]||[];}); state=migrate(s); save(); sel=Math.min(Math.max(todayIdx(),0),DAYS-1); ta.style.display='none'; render(); toast('Restaurado ✔'); });
+    ask('Restaurar',online()?'Se reemplaza el progreso de todo el grupo por el respaldo.':'Se reemplaza el progreso actual por el respaldo.',()=>{ PLAYERS.forEach(p=>{s.log[p.id]=s.log[p.id]||[];}); replaceAll(migrate(s)); sel=Math.min(Math.max(todayIdx(),0),DAYS-1); ta.style.display='none'; render(); toast('Restaurado ✔'); });
   }catch(_){ toast('Respaldo inválido'); }
 };
 
@@ -631,17 +769,21 @@ try{
 })();
 $('saveBtn').onclick = () => {
   const ok = save(); saveInfo();
-  if (ok) { toast('💾 Guardado ✔'); try{ navigator.vibrate && navigator.vibrate(30); }catch(_){} }
+  if (ok && online()) { toast('⏳ Subiendo…'); flush().then(up=>{ renderSync(); toast(up?'☁️ Guardado y subido ✔':'💾 Guardado en el celular · se sube cuando haya internet'); if(up) pull(); }); }
+  else if (ok) { toast('💾 Guardado ✔'); try{ navigator.vibrate && navigator.vibrate(30); }catch(_){} }
   else ask('No se pudo guardar','Este navegador no está guardando datos. Abrí la página en Chrome normal (no incógnito ni dentro de WhatsApp) y agregala a la pantalla de inicio.',()=>{});
 };
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') save(); });
 window.addEventListener('pagehide',()=>save());
+window.addEventListener('online',()=>{ flush().then(()=>pull()); });
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') pull(); });
+if (online()) { preSync = JSON.parse(JSON.stringify(state)); pull().then(listen); }
 applyBg(); render();
 // primera vez: elegir jugador
 (()=>{ let has=false; try{ has=!!localStorage.getItem(PKEY); }catch(_){}
   if(has) return;
   $('whoBtns').innerHTML = PLAYERS.map((p,i)=>`<button class="btn" data-p="${p.id}" style="font-family:Anton,sans-serif;font-size:24px;border:2px solid ${PCOL[i]}">${p.name}</button>`).join('');
-  $('whoBtns').querySelectorAll('button').forEach(b=>b.onclick=()=>{ cur=b.dataset.p; sel=Math.min(Math.max(todayIdx(),0),DAYS-1); try{localStorage.setItem(PKEY,cur);}catch(_){} $('who').classList.remove('show'); render(); toast('¡Vamos, '+PLAYERS.find(p=>p.id===cur).name+'! 👊'); });
+  $('whoBtns').querySelectorAll('button').forEach(b=>b.onclick=()=>{ cur=b.dataset.p; sel=Math.min(Math.max(todayIdx(),0),DAYS-1); try{localStorage.setItem(PKEY,cur);}catch(_){} $('who').classList.remove('show'); if(online()&&sync.status==='ok') mergeLocal(); render(); toast('¡Vamos, '+PLAYERS.find(p=>p.id===cur).name+'! 👊'); });
   $('who').classList.add('show');
 })();
 let last=ymd(new Date()); setInterval(()=>{ const n=ymd(new Date()); if(n!==last){ last=n; sel=Math.min(Math.max(todayIdx(),0),DAYS-1); render(); } },60000);
